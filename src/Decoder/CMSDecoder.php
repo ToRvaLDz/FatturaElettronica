@@ -2,32 +2,30 @@
 
 namespace FatturaElettronicaPhp\FatturaElettronica\Decoder;
 
+use app\components\Utility;
 use FatturaElettronicaPhp\FatturaElettronica\Contracts\DigitalDocumentDecodeInterface;
 use SimpleXMLElement;
 
 class CMSDecoder implements DigitalDocumentDecodeInterface
 {
+
     public function decode(string $filePath): ?SimpleXMLElement
     {
         $xmlPath = tempnam(sys_get_temp_dir(), basename($filePath));
-        $pemPath = tempnam(sys_get_temp_dir(), basename($filePath));
 
         $p7mFilePath = $this->convertFromDERtoSMIMEFormat($filePath);
 
-        // php 8 only
-        if (
-            function_exists('openssl_cms_verify') &&
-            openssl_cms_verify($p7mFilePath, OPENSSL_CMS_NOVERIFY + OPENSSL_CMS_NOSIGS, $pemPath, [__DIR__ . '/ca.pem'], __DIR__ . '/ca.pem', $xmlPath)
-        ) {
-            return (new XMLDecoder())->decode($xmlPath);
-        }
-
         $exitCode = 0;
         $output = [];
-        exec(sprintf('openssl cms -verify -noverify -nosigs -in %s --inform DER  -out %s 2> /dev/null', $pemPath, $xmlPath), $output, $exitCode);
 
-        if ($exitCode !== 0) {
-            return null;
+        if (openssl_pkcs7_verify($p7mFilePath, PKCS7_NOVERIFY, $filePath, [__DIR__ . '/ca.pem'], __DIR__ . '/ca.pem', $xmlPath) !== 1) {
+            exec("openssl cms -verify -in $filePath -inform DER -noverify -out $xmlPath", $output, $exitCode);
+            if ($exitCode !== 0) {
+                exec("openssl smime -verify -in $filePath - -inform DER -noverify -out $xmlPath", $output, $exitCode);
+                if ($exitCode !== 0) {
+                    return null;
+                }
+            }
         }
 
         return (new XMLDecoder())->decode($xmlPath);
@@ -44,9 +42,18 @@ Content-Transfer-Encoding: base64
 \n
 TXT;
         $from = file_get_contents($file);
-        $to .= chunk_split(base64_encode($from));
+        if (!$this->is_base64($from)) {
+            $from = base64_encode($from);
+        }
+        $to .= chunk_split($from);
         file_put_contents($pemPath, $to);
 
+
         return $pemPath;
+    }
+
+    protected function is_base64($s)
+    {
+        return (bool)preg_match('/^[a-zA-Z0-9\/\r\n+]*={0,2}$/', $s);
     }
 }
